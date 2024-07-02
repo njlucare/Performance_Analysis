@@ -94,6 +94,7 @@ class Performance:
         self.classNum = runningClassNum
         self.confusionMatrix = np.zeros((self.classNum+1,self.classNum+1))
         
+        
     def get_confusion(self):
         pbar = tqdm(total=len(self.segList),desc='Getting Confusion Matrix...')
         for seg,gt in zip(self.segList,self.gtList):
@@ -229,7 +230,17 @@ class Performance:
         crops = []
         for i in range(num_splits):
             for j in range(num_splits):
-                crop = image[i*split_height:(i+1)*split_height, j*split_width:(j+1)*split_width]
+                if i==num_splits-1:
+                    h_end = height
+                else:
+                    h_end = ((i+1)*split_height)
+                    
+                if j==num_splits-1:
+                    w_end = width
+                else:
+                    w_end = ((j+1)*split_width)
+                
+                crop = image[i*split_height:h_end, j*split_width:w_end]
                 crops.append(crop)
         return crops
     
@@ -353,6 +364,7 @@ unusable = None
 
 # #Create the object
 performance1 = Performance(segmentations, gts, unusable, None)
+performance2 = Performance(segmentations, gts, unusable, None)
 
 # #Get confusion matrix
 cm = performance1.get_confusion()
