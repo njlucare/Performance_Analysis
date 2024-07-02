@@ -1,10 +1,7 @@
 import numpy as np
-import sys
 import multiprocessing
-from skimage.morphology import disk
-from PIL import Image
-from glob import glob
-from subprocess import call
+#from PIL import Image
+#from subprocess import call
 from joblib import Parallel, delayed
 from xml_to_mask_ome import xml_to_mask
 from skimage.measure import regionprops,label
@@ -52,7 +49,7 @@ class ConfMat:
             label_subset = self.classLabels
             
         colors = np.vectorize(self.__color_mapping)(conf_subset)
-        plt.figure(figsize=(24,24))
+        plt.figure(figsize=(40,32))#24x24
         sns.set(font_scale=1.3)
         sns.heatmap(colors,annot=conf_subset,fmt=".1e",cmap="Blues",xticklabels=label_subset,yticklabels=label_subset)
         plt.xlabel("Predicted",fontsize=32)
@@ -84,6 +81,11 @@ class Performance:
         for seg,gt in zip(self.segList,self.gtList):
             max_gt = np.max(ti.imread(gt))
             max_seg = np.max(ti.imread(seg))
+            
+            if max_gt == 255:
+                max_gt = np.unique(ti.imread(gt))[-2]
+                
+            
             if max_seg > runningClassNum:
                 runningClassNum = max_seg
             if max_gt > runningClassNum:
@@ -91,13 +93,13 @@ class Performance:
 
         self.classNum = runningClassNum
         self.confusionMatrix = np.zeros((self.classNum+1,self.classNum+1))
-
+        
     def get_confusion(self):
         pbar = tqdm(total=len(self.segList),desc='Getting Confusion Matrix...')
         for seg,gt in zip(self.segList,self.gtList):
             gt_mask = ti.imread(gt)
             seg_mask = ti.imread(seg)
-
+            gt_mask[gt_mask==255] = 0
             if len(seg_mask.shape) > 2:
                 seg_mask = seg_mask[0,:,:]
 
@@ -108,18 +110,19 @@ class Performance:
 
 
             confmat = np.zeros((self.classNum+1,self.classNum+1))
-            for i in np.unique(gt_mask):
-                for j in np.unique(seg_mask):
-                    temp_seg = (seg_mask==j).astype(np.int32)
-                    temp_gt = (gt_mask==i).astype(np.int32)
-
-                    TP = np.sum(np.multiply(temp_gt,temp_seg))
-                    confmat[i,j] = TP
-
+            
+            #This is where i should implement parallelization
+            num_splits = int(np.floor(multiprocessing.cpu_count()**0.5))
+            
+            
+            confmat = self._process_image(confmat, seg_mask, gt_mask, num_splits)
+            confmat = sum(confmat)
+            
             self.confusionMatrix+=confmat
             pbar.update(1)
         pbar.close()
         return self.confusionMatrix
+            
 
     def get_PQ(self):
         PQ_list = []
@@ -202,6 +205,47 @@ class Performance:
             pbar.update(1)
         pbar.close()
         return PQ_list,IoU_list
+    
+    def _process_crop(self,confmat,seg_crop,gt_crop):
+        
+        for i in np.unique(gt_crop):
+                for j in np.unique(seg_crop):
+                    temp_seg = (seg_crop==j).astype(np.int32)
+                    temp_gt = (gt_crop==i).astype(np.int32)
+
+                    TP = np.sum(np.multiply(temp_gt,temp_seg))
+                    confmat[i,j] = TP
+        
+   
+        return confmat
+    
+    def __split_image(self,image, num_splits):
+        # Split the image into a grid of sub-images
+        height, width = image.shape
+        
+        split_height = height // num_splits
+        split_width = width // num_splits
+        
+        crops = []
+        for i in range(num_splits):
+            for j in range(num_splits):
+                crop = image[i*split_height:(i+1)*split_height, j*split_width:(j+1)*split_width]
+                crops.append(crop)
+        return crops
+    
+    def _process_image(self,confmat,seg_mask,gt_mask, num_splits):        
+    
+        # Split the image into crops
+        seg_crops = self.__split_image(seg_mask, num_splits)
+        gt_crops = self.__split_image(gt_mask, num_splits)
+        
+        # Use joblib to process each crop in parallel
+        zipped_crops = zip(seg_crops,gt_crops)
+        
+        confmats = Parallel(n_jobs=int(num_splits**2))(delayed(self._process_crop)(confmat,seg_crop,gt_crop) for (seg_crop,gt_crop) in zipped_crops)
+    
+        # Sum all the results together
+        return confmats
 
 
     def __maximize_bbox(self,x1,x2,x3,x4,y1,y2,y3,y4):
@@ -292,24 +336,12 @@ class Performance:
 
 #Create a list of all your segmentation outputs
 segmentations = [
-        '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_intestine/B012A_1.tif',
-        '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_intestine/B012A_2.tif',
-        '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_intestine/B012A_4.tif',
-        '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_intestine/B012B_1.tif',
-        '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_intestine/B012B_2.tif',
-        '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_intestine/B012B_3.tif',
-        '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_intestine/B012B_4.tif'
+        '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_frozen_kidney/HE_0020_section1.tif'
         ]
 
 #Create a list of all your corresponding ground truths
 gts = [
-       '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_intestine/B012A_1_Registered.tif',
-       '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_intestine/B012A_2_Registered.tif',
-       '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_intestine/B012A_4_Registered.tif',
-       '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_intestine/B012B_1_Registered.tif',
-       '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_intestine/B012B_2_Registered.tif',
-       '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_intestine/B012B_3_Registered.tif',
-       '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_intestine/B012B_4_Registered.tif'
+       '/blue/pinaki.sarder/nlucarelli/BL_segmentation/slides_frozen_kidney/HE_0020_section1_Registered.tif'
         ]
 
 #Any annotated files for areas you'd like to exclude (artifacts, etc.)
@@ -317,24 +349,24 @@ mask_subtract = None
 #Excel file containing coordinates of unusable regions of the tissue
 unusable = None
 #Where you want to save the confusion matrix
-output_csv = '/blue/pinaki.sarder/nlucarelli/Performance/intestine_attention.csv'
+# output_csv = '/blue/pinaki.sarder/nlucarelli/Performance/intestine_attention.csv'
 
-#Create the object
+# #Create the object
 performance1 = Performance(segmentations, gts, unusable, None)
 
-#Get confusion matrix
+# #Get confusion matrix
 cm = performance1.get_confusion()
-
+# cm = pd.read_csv('/blue/pinaki.sarder/nlucarelli/Performance/frozen_pec.csv').to_numpy()[1:,2:]
 #Get panoptic quality, and intersection over union
 # pqs,ious = performance1.get_PQ()
 
 #Create a ConfMat object, provide a list of the class labels
-confmat1 = ConfMat(cm, ['1','2','3','4','5','6','7','8','9','10','11','12','13'])
+# confmat1 = ConfMat(cm, ['ATL','IMM','CNT','DCT','ENDO','PEC','GLOM','CD','PT','SMC','TAL'])
 
-#Get metrics and plot
-confmat1.get_balanced_accuracy(list(range(13))[1:])
-confmat1.plot_matrix(True)
-
+# # #Get metrics and plot
+# confmat1.get_balanced_accuracy(list(range(11))[0:])
+# confmat1.plot_matrix(False)
+# plt.savefig('/blue/pinaki.sarder/nlucarelli/perf.png')
 
 
 
